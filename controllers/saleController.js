@@ -10,56 +10,109 @@ const generateInvoiceNo = async () => {
 
 const createSale = async (req, res) => {
   try {
-    const { shopkeeperId, items, subtotal, discount, discountPercent, totalAmount, paidAmount, creditAmount, paymentMethod } = req.body;
+    const {
+      shopkeeperId,
+      items,
+      subtotal,
+      discount,
+      discountPercent,
+      totalAmount,
+      paidAmount,
+      creditAmount,
+      paymentMethod,
+    } = req.body;
 
     if (!items || items.length === 0) {
       return res.status(400).json({ message: 'Cart is empty' });
     }
 
-    let shopkeeperData = { shopkeeper: null, shopkeeperName: 'Walk-in Customer', shopName: 'Walk-in', phone: '', address: '' };
+    const safeSubtotal = Number(subtotal) || 0;
+    const safeDiscount = Number(discount) || 0;
+    const safeDiscountPercent = Number(discountPercent) || 0;
+    const safeTotalAmount = Number(totalAmount) || 0;
+    const safePaidAmount = Number(paidAmount) || 0;
+    let safeCreditAmount = Number(creditAmount) || 0;
+
+    if (paymentMethod === 'cash') {
+      safeCreditAmount = 0;
+    } else if (paymentMethod === 'credit') {
+      safeCreditAmount = safeTotalAmount;
+    } else if (paymentMethod === 'partial') {
+      safeCreditAmount = Math.max(0, safeTotalAmount - safePaidAmount);
+    }
+
+    let shopkeeperData = {
+      shopkeeper: null,
+      shopkeeperName: 'Walk-in Customer',
+      shopName: 'Walk-in',
+      phone: '',
+      address: '',
+    };
+
+    let shopkeeperDoc = null;
 
     if (shopkeeperId) {
-      const sk = await Shopkeeper.findById(shopkeeperId);
-      if (!sk) return res.status(404).json({ message: 'Shopkeeper not found' });
+      shopkeeperDoc = await Shopkeeper.findById(shopkeeperId);
+      if (!shopkeeperDoc) {
+        return res.status(404).json({ message: 'Shopkeeper not found' });
+      }
+
       shopkeeperData = {
-        shopkeeper: sk._id,
-        shopkeeperName: sk.name,
-        shopName: sk.shopName,
-        phone: sk.phone,
-        address: sk.address,
+        shopkeeper: shopkeeperDoc._id,
+        shopkeeperName: shopkeeperDoc.name,
+        shopName: shopkeeperDoc.shopName,
+        phone: shopkeeperDoc.phone || '',
+        address: shopkeeperDoc.address || '',
       };
     }
 
+    if ((paymentMethod === 'credit' || paymentMethod === 'partial') && !shopkeeperDoc) {
+      return res.status(400).json({ message: 'Customer is required for credit or partial payment' });
+    }
+
     const enrichedItems = [];
+
     for (const item of items) {
       const product = await Product.findById(item.productId);
-      if (!product) return res.status(404).json({ message: `Product ${item.name} not found` });
-      if (product.stock < item.qty) {
+      if (!product) {
+        return res.status(404).json({ message: `Product ${item.name || ''} not found` });
+      }
+
+      const qty = Number(item.qty) || 0;
+      const price = Number(item.price) || product.price;
+
+      if (qty <= 0) {
+        return res.status(400).json({ message: `Invalid quantity for ${product.name}` });
+      }
+
+      if (product.stock < qty) {
         return res.status(400).json({ message: `Insufficient stock for ${product.name}` });
       }
 
-      product.stock -= item.qty;
+      product.stock -= qty;
+
       if (product.stock <= 0) product.status = 'out_of_stock';
       else if (product.stock <= product.minStock) product.status = 'low_stock';
       else product.status = 'in_stock';
+
       await product.save();
 
       enrichedItems.push({
         productId: product._id,
         name: product.name,
-        brand: product.brand,
-        unitValue: product.unitValue,
-        unit: product.unit,
-        qty: item.qty,
-        price: item.price,
+        brand: product.brand || '',
+        unitValue: product.unitValue || 1,
+        unit: product.unit || 'pcs',
+        qty,
+        price,
         costPrice: product.costPrice,
-        total: item.qty * item.price,
+        total: qty * price,
       });
     }
 
     const invoiceNo = await generateInvoiceNo();
 
-    let status = 'completed';
+    let status = 'paid';
     if (paymentMethod === 'credit') status = 'unpaid';
     else if (paymentMethod === 'partial') status = 'partial';
     else status = 'paid';
@@ -69,24 +122,21 @@ const createSale = async (req, res) => {
       ...shopkeeperData,
       items: enrichedItems,
       itemsCount: enrichedItems.length,
-      subtotal,
-      discount,
-      discountPercent,
-      totalAmount,
-      paidAmount,
-      creditAmount,
+      subtotal: safeSubtotal,
+      discount: safeDiscount,
+      discountPercent: safeDiscountPercent,
+      totalAmount: safeTotalAmount,
+      paidAmount: paymentMethod === 'credit' ? 0 : safePaidAmount,
+      creditAmount: safeCreditAmount,
       paymentMethod,
       status,
       createdBy: req.user._id,
     });
 
-    if (shopkeeperId && (creditAmount > 0 || paymentMethod !== 'credit')) {
-      await Shopkeeper.findByIdAndUpdate(shopkeeperId, {
-        $inc: {
-          totalCredit: creditAmount,
-          totalPurchases: totalAmount,
-        },
-      });
+    if (shopkeeperDoc) {
+      shopkeeperDoc.totalPurchases = (shopkeeperDoc.totalPurchases || 0) + safeTotalAmount;
+      shopkeeperDoc.totalCredit = (shopkeeperDoc.totalCredit || 0) + safeCreditAmount;
+      await shopkeeperDoc.save();
     }
 
     res.status(201).json(sale);
