@@ -20,7 +20,7 @@ const app = express();
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
 
@@ -35,7 +35,7 @@ app.use(async (req, res, next) => {
     next();
   } catch (error) {
     console.error('Database connection error:', error);
-    res.status(500).json({ message: 'Database connection failed' });
+    res.status(500).json({ message: 'Database connection failed. Please check MONGODB_URI.' });
   }
 });
 
