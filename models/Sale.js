@@ -2,8 +2,10 @@ const mongoose = require('mongoose');
 
 const saleItemSchema = new mongoose.Schema({
   productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+  variantLabel: String,
   name: { type: String, required: true },
-  brand: String,
+  brandName: String,
+  categoryName: String,
   unitValue: Number,
   unit: String,
   qty: { type: Number, required: true },

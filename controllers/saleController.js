@@ -33,13 +33,9 @@ const createSale = async (req, res) => {
     const safePaidAmount = Number(paidAmount) || 0;
     let safeCreditAmount = Number(creditAmount) || 0;
 
-    if (paymentMethod === 'cash') {
-      safeCreditAmount = 0;
-    } else if (paymentMethod === 'credit') {
-      safeCreditAmount = safeTotalAmount;
-    } else if (paymentMethod === 'partial') {
-      safeCreditAmount = Math.max(0, safeTotalAmount - safePaidAmount);
-    }
+    if (paymentMethod === 'cash') safeCreditAmount = 0;
+    else if (paymentMethod === 'credit') safeCreditAmount = safeTotalAmount;
+    else if (paymentMethod === 'partial') safeCreditAmount = Math.max(0, safeTotalAmount - safePaidAmount);
 
     let shopkeeperData = {
       shopkeeper: null,
@@ -48,15 +44,11 @@ const createSale = async (req, res) => {
       phone: '',
       address: '',
     };
-
     let shopkeeperDoc = null;
 
     if (shopkeeperId) {
       shopkeeperDoc = await Shopkeeper.findById(shopkeeperId);
-      if (!shopkeeperDoc) {
-        return res.status(404).json({ message: 'Shopkeeper not found' });
-      }
-
+      if (!shopkeeperDoc) return res.status(404).json({ message: 'Shopkeeper not found' });
       shopkeeperData = {
         shopkeeper: shopkeeperDoc._id,
         shopkeeperName: shopkeeperDoc.name,
@@ -74,48 +66,44 @@ const createSale = async (req, res) => {
 
     for (const item of items) {
       const product = await Product.findById(item.productId);
-      if (!product) {
-        return res.status(404).json({ message: `Product ${item.name || ''} not found` });
-      }
+      if (!product) return res.status(404).json({ message: `Product ${item.name || ''} not found` });
+
+      const variantLabel = item.variantLabel;
+      const variant = product.variants.find(v => v.label === variantLabel);
+      if (!variant) return res.status(404).json({ message: `Variant ${variantLabel} not found` });
 
       const qty = Number(item.qty) || 0;
-      const price = Number(item.price) || product.price;
+      const price = Number(item.price) || variant.price;
 
-      if (qty <= 0) {
-        return res.status(400).json({ message: `Invalid quantity for ${product.name}` });
-      }
+      if (qty <= 0) return res.status(400).json({ message: `Invalid quantity for ${product.name}` });
+      if (variant.stock < qty) return res.status(400).json({ message: `Insufficient stock for ${product.name} ${variant.label}` });
 
-      if (product.stock < qty) {
-        return res.status(400).json({ message: `Insufficient stock for ${product.name}` });
-      }
-
-      product.stock -= qty;
-
-      if (product.stock <= 0) product.status = 'out_of_stock';
-      else if (product.stock <= product.minStock) product.status = 'low_stock';
-      else product.status = 'in_stock';
+      variant.stock -= qty;
+      if (variant.stock <= 0) variant.status = 'out_of_stock';
+      else if (variant.stock <= variant.minStock) variant.status = 'low_stock';
+      else variant.status = 'in_stock';
 
       await product.save();
 
       enrichedItems.push({
         productId: product._id,
+        variantLabel: variant.label,
         name: product.name,
-        brand: product.brand || '',
-        unitValue: product.unitValue || 1,
-        unit: product.unit || 'pcs',
+        brandName: product.brandName,
+        categoryName: product.categoryName,
+        unitValue: variant.unitValue,
+        unit: variant.unit,
         qty,
         price,
-        costPrice: product.costPrice,
+        costPrice: variant.costPrice,
         total: qty * price,
       });
     }
 
     const invoiceNo = await generateInvoiceNo();
-
     let status = 'paid';
     if (paymentMethod === 'credit') status = 'unpaid';
     else if (paymentMethod === 'partial') status = 'partial';
-    else status = 'paid';
 
     const sale = await Sale.create({
       invoiceNo,
