@@ -37,21 +37,19 @@ const productSchema = new mongoose.Schema(
       required: true,
     },
     categoryName: { type: String, required: true },
-    variants: {
-      type: [variantSchema],
-      validate: [arr => arr.length > 0, 'At least one variant is required'],
-    },
+    variants: [variantSchema],
   },
   { timestamps: true }
 );
 
-productSchema.pre('save', function (next) {
-  this.variants.forEach(v => {
-    if (v.stock <= 0) v.status = 'out_of_stock';
-    else if (v.stock <= v.minStock) v.status = 'low_stock';
-    else v.status = 'in_stock';
-  });
-  next();
+productSchema.pre('save', function () {
+  if (Array.isArray(this.variants)) {
+    this.variants.forEach((v) => {
+      if (v.stock <= 0) v.status = 'out_of_stock';
+      else if (v.stock <= v.minStock) v.status = 'low_stock';
+      else v.status = 'in_stock';
+    });
+  }
 });
 
 module.exports = mongoose.model('Product', productSchema);
