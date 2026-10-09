@@ -13,6 +13,8 @@ const invoiceRoutes = require('./routes/invoiceRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
 const brandRoutes = require('./routes/brandRoutes');
+const supplierRoutes = require('./routes/supplierRoutes');
+const purchaseRoutes = require('./routes/purchaseRoutes');
 
 dotenv.config();
 
@@ -41,6 +43,8 @@ app.use('/api/invoices', invoiceRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/brands', brandRoutes);
+app.use('/api/suppliers', supplierRoutes);
+app.use('/api/purchases', purchaseRoutes);
 
 app.get('/', (req, res) => {
   res.send('StorePOS Backend API is running on Vercel...');

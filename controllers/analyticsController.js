@@ -1,4 +1,5 @@
 const Sale = require('../models/Sale');
+const Purchase = require('../models/Purchase');
 
 const getProfitLoss = async (req, res) => {
   try {
@@ -38,7 +39,6 @@ const getProfitLoss = async (req, res) => {
         const itemCost = (item.costPrice || 0) * item.qty;
         const itemRev = item.total;
         const itemProfit = itemRev - itemCost;
-
         saleCost += itemCost;
 
         const catName = item.categoryName || 'Uncategorized';
@@ -63,7 +63,6 @@ const getProfitLoss = async (req, res) => {
     });
 
     const monthlyData = Object.values(monthlyMap).sort((a, b) => a.sortKey.localeCompare(b.sortKey));
-
     const categoryProfitData = Object.values(categoryMap)
       .map((cat) => ({
         ...cat,
@@ -87,4 +86,68 @@ const getProfitLoss = async (req, res) => {
   }
 };
 
-module.exports = { getProfitLoss };
+const getPurchaseAnalytics = async (req, res) => {
+  try {
+    const purchases = await Purchase.find({}).sort({ createdAt: 1 });
+
+    let totalSpent = 0;
+    let totalPaid = 0;
+    let totalDue = 0;
+    let totalItems = 0;
+
+    const monthlyMap = {};
+    const supplierMap = {};
+
+    purchases.forEach((p) => {
+      const date = new Date(p.createdAt);
+      const monthYear = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      const monthName = date.toLocaleString('default', { month: 'short' });
+
+      if (!monthlyMap[monthYear]) {
+        monthlyMap[monthYear] = {
+          month: monthName,
+          year: date.getFullYear(),
+          spent: 0,
+          paid: 0,
+          due: 0,
+          orders: 0,
+          sortKey: monthYear,
+        };
+      }
+
+      monthlyMap[monthYear].spent += p.totalAmount || 0;
+      monthlyMap[monthYear].paid += p.paidAmount || 0;
+      monthlyMap[monthYear].due += p.dueAmount || 0;
+      monthlyMap[monthYear].orders += 1;
+
+      totalSpent += p.totalAmount || 0;
+      totalPaid += p.paidAmount || 0;
+      totalDue += p.dueAmount || 0;
+      totalItems += p.itemsCount || 0;
+
+      const supKey = String(p.supplier);
+      if (!supplierMap[supKey]) {
+        supplierMap[supKey] = { name: p.companyName, spent: 0, orders: 0 };
+      }
+      supplierMap[supKey].spent += p.totalAmount || 0;
+      supplierMap[supKey].orders += 1;
+    });
+
+    const monthlyData = Object.values(monthlyMap).sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+    const topSuppliers = Object.values(supplierMap).sort((a, b) => b.spent - a.spent).slice(0, 5);
+
+    res.status(200).json({
+      totalSpent,
+      totalPaid,
+      totalDue,
+      totalItems,
+      totalOrders: purchases.length,
+      monthlyData,
+      topSuppliers,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+module.exports = { getProfitLoss, getPurchaseAnalytics };
