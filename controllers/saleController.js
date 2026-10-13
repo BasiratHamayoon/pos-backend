@@ -18,7 +18,6 @@ const createSale = async (req, res) => {
       discountPercent,
       totalAmount,
       paidAmount,
-      creditAmount,
       paymentMethod,
     } = req.body;
 
@@ -26,16 +25,20 @@ const createSale = async (req, res) => {
       return res.status(400).json({ message: 'Cart is empty' });
     }
 
-    const safeSubtotal = Number(subtotal) || 0;
-    const safeDiscount = Number(discount) || 0;
-    const safeDiscountPercent = Number(discountPercent) || 0;
     const safeTotalAmount = Number(totalAmount) || 0;
-    const safePaidAmount = Number(paidAmount) || 0;
-    let safeCreditAmount = Number(creditAmount) || 0;
+    let safePaidAmount = 0;
+    let safeCreditAmount = 0;
 
-    if (paymentMethod === 'cash') safeCreditAmount = 0;
-    else if (paymentMethod === 'credit') safeCreditAmount = safeTotalAmount;
-    else if (paymentMethod === 'partial') safeCreditAmount = Math.max(0, safeTotalAmount - safePaidAmount);
+    if (paymentMethod === 'cash') {
+      safePaidAmount = safeTotalAmount;
+      safeCreditAmount = 0;
+    } else if (paymentMethod === 'credit') {
+      safePaidAmount = 0;
+      safeCreditAmount = safeTotalAmount;
+    } else if (paymentMethod === 'partial') {
+      safePaidAmount = Number(paidAmount) || 0;
+      safeCreditAmount = Math.max(0, safeTotalAmount - safePaidAmount);
+    }
 
     let shopkeeperData = {
       shopkeeper: null,
@@ -44,11 +47,15 @@ const createSale = async (req, res) => {
       phone: '',
       address: '',
     };
+
     let shopkeeperDoc = null;
 
     if (shopkeeperId) {
       shopkeeperDoc = await Shopkeeper.findById(shopkeeperId);
-      if (!shopkeeperDoc) return res.status(404).json({ message: 'Shopkeeper not found' });
+      if (!shopkeeperDoc) {
+        return res.status(404).json({ message: 'Shopkeeper not found' });
+      }
+
       shopkeeperData = {
         shopkeeper: shopkeeperDoc._id,
         shopkeeperName: shopkeeperDoc.name,
@@ -66,41 +73,62 @@ const createSale = async (req, res) => {
 
     for (const item of items) {
       const product = await Product.findById(item.productId);
-      if (!product) return res.status(404).json({ message: `Product ${item.name || ''} not found` });
+      if (!product) {
+        return res.status(404).json({ message: `Product ${item.name || ''} not found` });
+      }
 
-      const variantLabel = item.variantLabel;
-      const variant = product.variants.find(v => v.label === variantLabel);
-      if (!variant) return res.status(404).json({ message: `Variant ${variantLabel} not found` });
+      let variant = null;
+
+      if (product.variants && product.variants.length > 0) {
+        if (item.variantId) {
+          variant = product.variants.find((v) => String(v._id) === String(item.variantId));
+        }
+        if (!variant && item.variantLabel) {
+          variant = product.variants.find((v) => v.label === item.variantLabel);
+        }
+        if (!variant) {
+          variant = product.variants[0];
+        }
+      }
 
       const qty = Number(item.qty) || 0;
-      const price = Number(item.price) || variant.price;
+      const price = Number(item.price) || (variant ? variant.price : 0);
+      const costPrice = Number(item.costPrice) || (variant ? Number(variant.costPrice) : 0) || 0;
 
-      if (qty <= 0) return res.status(400).json({ message: `Invalid quantity for ${product.name}` });
-      if (variant.stock < qty) return res.status(400).json({ message: `Insufficient stock for ${product.name} ${variant.label}` });
+      if (qty <= 0) {
+        return res.status(400).json({ message: `Invalid quantity for ${product.name}` });
+      }
 
-      variant.stock -= qty;
-      if (variant.stock <= 0) variant.status = 'out_of_stock';
-      else if (variant.stock <= variant.minStock) variant.status = 'low_stock';
-      else variant.status = 'in_stock';
+      if (variant) {
+        if (variant.stock < qty) {
+          return res.status(400).json({ message: `Insufficient stock for ${product.name} (${variant.label})` });
+        }
+        variant.stock -= qty;
+
+        if (variant.stock <= 0) variant.status = 'out_of_stock';
+        else if (variant.stock <= variant.minStock) variant.status = 'low_stock';
+        else variant.status = 'in_stock';
+      }
 
       await product.save();
 
       enrichedItems.push({
         productId: product._id,
-        variantLabel: variant.label,
         name: product.name,
-        brandName: product.brandName,
-        categoryName: product.categoryName,
-        unitValue: variant.unitValue,
-        unit: variant.unit,
+        variantLabel: item.variantLabel || (variant ? variant.label : ''),
+        brandName: product.brandName || '',
+        categoryName: product.categoryName || '',
+        unitValue: variant ? variant.unitValue : 1,
+        unit: variant ? variant.unit : 'pcs',
         qty,
         price,
-        costPrice: variant.costPrice,
+        costPrice,
         total: qty * price,
       });
     }
 
     const invoiceNo = await generateInvoiceNo();
+
     let status = 'paid';
     if (paymentMethod === 'credit') status = 'unpaid';
     else if (paymentMethod === 'partial') status = 'partial';
@@ -110,20 +138,23 @@ const createSale = async (req, res) => {
       ...shopkeeperData,
       items: enrichedItems,
       itemsCount: enrichedItems.length,
-      subtotal: safeSubtotal,
-      discount: safeDiscount,
-      discountPercent: safeDiscountPercent,
+      subtotal: Number(subtotal) || 0,
+      discount: Number(discount) || 0,
+      discountPercent: Number(discountPercent) || 0,
       totalAmount: safeTotalAmount,
-      paidAmount: paymentMethod === 'credit' ? 0 : safePaidAmount,
+      paidAmount: safePaidAmount,
       creditAmount: safeCreditAmount,
       paymentMethod,
       status,
       createdBy: req.user._id,
     });
 
-    if (shopkeeperDoc) {
+    if (shopkeeperDoc && safeCreditAmount > 0) {
       shopkeeperDoc.totalPurchases = (shopkeeperDoc.totalPurchases || 0) + safeTotalAmount;
       shopkeeperDoc.totalCredit = (shopkeeperDoc.totalCredit || 0) + safeCreditAmount;
+      await shopkeeperDoc.save();
+    } else if (shopkeeperDoc) {
+      shopkeeperDoc.totalPurchases = (shopkeeperDoc.totalPurchases || 0) + safeTotalAmount;
       await shopkeeperDoc.save();
     }
 
