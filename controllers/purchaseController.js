@@ -11,30 +11,40 @@ const generatePONumber = async () => {
 
 const createPurchase = async (req, res) => {
   try {
-    const { supplierId, items, subtotal, discount, totalAmount, paidAmount, dueAmount, paymentMethod } = req.body;
+    const { supplierId, items, subtotal, discount, totalAmount, paidAmount, paymentMethod } = req.body;
 
     if (!items || items.length === 0) return res.status(400).json({ message: 'Purchase list is empty' });
-
     if (!mongoose.Types.ObjectId.isValid(supplierId)) return res.status(400).json({ message: 'Invalid Supplier ID' });
+    
     const supplierDoc = await Supplier.findById(supplierId);
     if (!supplierDoc) return res.status(404).json({ message: 'Supplier not found' });
 
-    const enrichedItems = [];
+    const safeTotalAmount = Number(totalAmount) || 0;
+    let safePaidAmount = 0;
+    let safeDueAmount = 0;
 
-    // 1. Process items and INCREASE stock in Products
+    if (paymentMethod === 'credit') {
+      safePaidAmount = 0;
+      safeDueAmount = safeTotalAmount;
+    } else {
+      safePaidAmount = Number(paidAmount);
+      if (isNaN(safePaidAmount)) safePaidAmount = safeTotalAmount;
+      safeDueAmount = Math.max(0, safeTotalAmount - safePaidAmount);
+    }
+
+    const enrichedItems = [];
     for (const item of items) {
       const product = await Product.findById(item.productId);
       if (!product) return res.status(404).json({ message: `Product ${item.name} not found` });
 
       const variant = product.variants.id(item.variantId);
-      if (!variant) return res.status(404).json({ message: `Variant ${item.variantLabel} not found for product ${product.name}` });
+      if (!variant) return res.status(404).json({ message: `Variant ${item.variantLabel} not found` });
 
       const qty = Number(item.qty) || 0;
       const costPrice = Number(item.costPrice) || variant.costPrice;
 
       if (qty <= 0) return res.status(400).json({ message: `Invalid quantity for ${product.name}` });
 
-      // INCREASE STOCK & Update Cost Price if it changed
       variant.stock += qty;
       variant.costPrice = costPrice;
       
@@ -57,7 +67,6 @@ const createPurchase = async (req, res) => {
 
     const poNumber = await generatePONumber();
 
-    // 2. Create Purchase Record
     const purchase = await Purchase.create({
       poNumber,
       supplier: supplierDoc._id,
@@ -67,16 +76,15 @@ const createPurchase = async (req, res) => {
       itemsCount: enrichedItems.length,
       subtotal: Number(subtotal) || 0,
       discount: Number(discount) || 0,
-      totalAmount: Number(totalAmount) || 0,
-      paidAmount: Number(paidAmount) || 0,
-      dueAmount: Number(dueAmount) || 0,
+      totalAmount: safeTotalAmount,
+      paidAmount: safePaidAmount,
+      dueAmount: safeDueAmount,
       paymentMethod,
       createdBy: req.user._id,
     });
 
-    // 3. Update Supplier Balances
-    supplierDoc.totalPurchased = (supplierDoc.totalPurchased || 0) + (Number(totalAmount) || 0);
-    supplierDoc.totalPayable = (supplierDoc.totalPayable || 0) + (Number(dueAmount) || 0);
+    supplierDoc.totalPurchased = (supplierDoc.totalPurchased || 0) + safeTotalAmount;
+    supplierDoc.totalPayable = (supplierDoc.totalPayable || 0) + safeDueAmount;
     await supplierDoc.save();
 
     res.status(201).json(purchase);

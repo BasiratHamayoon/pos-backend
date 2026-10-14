@@ -21,22 +21,22 @@ const createSale = async (req, res) => {
       paymentMethod,
     } = req.body;
 
-    if (!items || items.length === 0) {
-      return res.status(400).json({ message: 'Cart is empty' });
-    }
+    if (!items || items.length === 0) return res.status(400).json({ message: 'Cart is empty' });
 
     const safeTotalAmount = Number(totalAmount) || 0;
+    
+    // Explicit Math Processing
     let safePaidAmount = 0;
     let safeCreditAmount = 0;
 
-    if (paymentMethod === 'cash') {
-      safePaidAmount = safeTotalAmount;
-      safeCreditAmount = 0;
-    } else if (paymentMethod === 'credit') {
+    if (paymentMethod === 'credit') {
       safePaidAmount = 0;
       safeCreditAmount = safeTotalAmount;
-    } else if (paymentMethod === 'partial') {
-      safePaidAmount = Number(paidAmount) || 0;
+    } else {
+      // paymentMethod === 'cash' (Handles full AND partial implicitly)
+      safePaidAmount = Number(paidAmount);
+      if (isNaN(safePaidAmount)) safePaidAmount = safeTotalAmount;
+      
       safeCreditAmount = Math.max(0, safeTotalAmount - safePaidAmount);
     }
 
@@ -52,59 +52,43 @@ const createSale = async (req, res) => {
 
     if (shopkeeperId) {
       shopkeeperDoc = await Shopkeeper.findById(shopkeeperId);
-      if (!shopkeeperDoc) {
-        return res.status(404).json({ message: 'Shopkeeper not found' });
+      if (shopkeeperDoc) {
+        shopkeeperData = {
+          shopkeeper: shopkeeperDoc._id,
+          shopkeeperName: shopkeeperDoc.name,
+          shopName: shopkeeperDoc.shopName,
+          phone: shopkeeperDoc.phone || '',
+          address: shopkeeperDoc.address || '',
+        };
       }
-
-      shopkeeperData = {
-        shopkeeper: shopkeeperDoc._id,
-        shopkeeperName: shopkeeperDoc.name,
-        shopName: shopkeeperDoc.shopName,
-        phone: shopkeeperDoc.phone || '',
-        address: shopkeeperDoc.address || '',
-      };
     }
 
-    if ((paymentMethod === 'credit' || paymentMethod === 'partial') && !shopkeeperDoc) {
-      return res.status(400).json({ message: 'Customer is required for credit or partial payment' });
+    if (safeCreditAmount > 0 && !shopkeeperDoc) {
+      return res.status(400).json({ message: 'Customer is required when paying less than the total bill (creating Khata).' });
     }
 
     const enrichedItems = [];
-
     for (const item of items) {
       const product = await Product.findById(item.productId);
-      if (!product) {
-        return res.status(404).json({ message: `Product ${item.name || ''} not found` });
-      }
+      if (!product) return res.status(404).json({ message: `Product ${item.name || ''} not found` });
 
       let variant = null;
-
       if (product.variants && product.variants.length > 0) {
-        if (item.variantId) {
-          variant = product.variants.find((v) => String(v._id) === String(item.variantId));
-        }
-        if (!variant && item.variantLabel) {
-          variant = product.variants.find((v) => v.label === item.variantLabel);
-        }
-        if (!variant) {
-          variant = product.variants[0];
-        }
+        if (item.variantId) variant = product.variants.find((v) => String(v._id) === String(item.variantId));
+        if (!variant && item.variantLabel) variant = product.variants.find((v) => v.label === item.variantLabel);
+        if (!variant) variant = product.variants[0];
       }
 
       const qty = Number(item.qty) || 0;
       const price = Number(item.price) || (variant ? variant.price : 0);
       const costPrice = Number(item.costPrice) || (variant ? Number(variant.costPrice) : 0) || 0;
 
-      if (qty <= 0) {
-        return res.status(400).json({ message: `Invalid quantity for ${product.name}` });
-      }
+      if (qty <= 0) return res.status(400).json({ message: `Invalid quantity for ${product.name}` });
 
       if (variant) {
-        if (variant.stock < qty) {
-          return res.status(400).json({ message: `Insufficient stock for ${product.name} (${variant.label})` });
-        }
+        if (variant.stock < qty) return res.status(400).json({ message: `Insufficient stock for ${product.name} (${variant.label})` });
+        
         variant.stock -= qty;
-
         if (variant.stock <= 0) variant.status = 'out_of_stock';
         else if (variant.stock <= variant.minStock) variant.status = 'low_stock';
         else variant.status = 'in_stock';
@@ -129,9 +113,12 @@ const createSale = async (req, res) => {
 
     const invoiceNo = await generateInvoiceNo();
 
+    // Determine status intelligently
     let status = 'paid';
-    if (paymentMethod === 'credit') status = 'unpaid';
-    else if (paymentMethod === 'partial') status = 'partial';
+    if (safeCreditAmount > 0) {
+      if (safePaidAmount > 0) status = 'partial';
+      else status = 'unpaid';
+    }
 
     const sale = await Sale.create({
       invoiceNo,
@@ -144,8 +131,8 @@ const createSale = async (req, res) => {
       totalAmount: safeTotalAmount,
       paidAmount: safePaidAmount,
       creditAmount: safeCreditAmount,
-      paymentMethod,
-      status,
+      paymentMethod: paymentMethod, // Stored as 'cash' or 'credit'
+      status, // Stored automatically as 'paid', 'partial', or 'unpaid'
       createdBy: req.user._id,
     });
 
