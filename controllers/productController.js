@@ -2,6 +2,43 @@ const mongoose = require('mongoose');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Brand = require('../models/Brand');
+const VariantTemplate = require('../models/VariantTemplate');
+
+const enrichVariants = async (variants) => {
+  const enriched = [];
+  for (const v of variants) {
+    let variantData = {
+      label: v.label,
+      unitValue: Number(v.unitValue) || 1,
+      unit: v.unit || '',
+      unitSymbol: v.unitSymbol || '',
+      price: Number(v.price) || 0,
+      costPrice: Number(v.costPrice) || 0,
+      stock: Number(v.stock) || 0,
+      minStock: Number(v.minStock) || 10,
+      variantTemplate: null,
+    };
+
+    // If a template is referenced, auto-fill from template
+    if (v.variantTemplateId && mongoose.Types.ObjectId.isValid(v.variantTemplateId)) {
+      const template = await VariantTemplate.findById(v.variantTemplateId);
+      if (template) {
+        variantData.variantTemplate = template._id;
+        variantData.label = template.label;
+        variantData.unitValue = template.unitValue;
+        variantData.unit = template.unitName;
+        variantData.unitSymbol = template.unitSymbol;
+      }
+    }
+
+    if (!variantData.label || !variantData.unit) {
+      throw new Error('Each variant must have a label and unit');
+    }
+
+    enriched.push(variantData);
+  }
+  return enriched;
+};
 
 const createProduct = async (req, res) => {
   try {
@@ -12,7 +49,7 @@ const createProduct = async (req, res) => {
     }
 
     if (!mongoose.Types.ObjectId.isValid(categoryId)) {
-      return res.status(400).json({ message: 'Invalid Category ID format. Must be a 24-character hexadecimal ID.' });
+      return res.status(400).json({ message: 'Invalid Category ID format.' });
     }
 
     const category = await Category.findById(categoryId);
@@ -21,7 +58,7 @@ const createProduct = async (req, res) => {
     let brandData = { brand: null, brandName: '' };
     if (brandId) {
       if (!mongoose.Types.ObjectId.isValid(brandId)) {
-        return res.status(400).json({ message: 'Invalid Brand ID format. Must be a 24-character hexadecimal ID.' });
+        return res.status(400).json({ message: 'Invalid Brand ID format.' });
       }
       const brand = await Brand.findById(brandId);
       if (!brand) return res.status(404).json({ message: 'Brand not found' });
@@ -29,15 +66,17 @@ const createProduct = async (req, res) => {
     }
 
     if (!variants || !Array.isArray(variants) || variants.length === 0) {
-      return res.status(400).json({ message: 'At least one variant in the variants array is required' });
+      return res.status(400).json({ message: 'At least one variant is required' });
     }
+
+    const enrichedVariants = await enrichVariants(variants);
 
     const product = await Product.create({
       name,
       ...brandData,
       category: category._id,
       categoryName: category.name,
-      variants,
+      variants: enrichedVariants,
     });
 
     res.status(201).json(product);
@@ -104,8 +143,10 @@ const updateProduct = async (req, res) => {
     }
 
     product.name = name || product.name;
+
     if (variants && Array.isArray(variants)) {
-      product.variants = variants;
+      const enrichedVariants = await enrichVariants(variants);
+      product.variants = enrichedVariants;
     }
 
     const updatedProduct = await product.save();

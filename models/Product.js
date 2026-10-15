@@ -1,12 +1,20 @@
 const mongoose = require('mongoose');
 
 const variantSchema = new mongoose.Schema({
+  variantTemplate: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'VariantTemplate',
+    default: null,
+  },
   label: { type: String, required: true },
   unitValue: { type: Number, default: 1 },
   unit: {
     type: String,
-    enum: ['pcs', 'pack', 'box', 'kg', 'g', 'l', 'ml'],
-    default: 'pcs',
+    required: true,
+  },
+  unitSymbol: {
+    type: String,
+    default: '',
   },
   price: { type: Number, required: true },
   costPrice: { type: Number, required: true },
